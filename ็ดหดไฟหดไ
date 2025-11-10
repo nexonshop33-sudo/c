@@ -1,0 +1,635 @@
+
+if not getgenv then getgenv = function() return _G end end
+local env = getgenv()
+
+if not env.DragonFarmConfig then
+    warn("⚠️ ไม่พบ Config! กำลังใช้ค่าเริ่มต้น...")
+env.DragonFarmConfig = {
+    BLACK_SCREEN = true,  -- เปิดโหมดประหยัดพลังงาน
+    BLACK_SCREEN_KEY = Enum.KeyCode.F8,  -- ปุ่มเปิด/ปิดจอดำ
+
+    SELL_THRESHOLD = 10000,
+    MOVEMENT_SPEED = 1.5,
+    ATTACK_DELAY = 0.03,
+
+    FPS_BOOST_ENABLED = true,
+    TARGET_FPS = 60,
+
+    SHOW_FRUIT_GUI = true,
+    SHOW_COIN_GUI = true,
+    GUI_UPDATE_RATE = 0.5
+}
+
+
+end
+
+local CONFIG = env.DragonFarmConfig
+
+--// 📦 SERVICES & VARIABLES
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local hrp = character:WaitForChild("HumanoidRootPart")
+
+--// ✅ ป้องกัน Infinite yield (ตรวจหา folder ที่ใกล้เคียง)
+local Interactions = workspace:FindFirstChild("Interactions")
+local Nodes = Interactions and Interactions:FindFirstChild("Nodes")
+local FoodFolder = nil
+
+if Nodes then
+    FoodFolder = Nodes:FindFirstChild("Food") 
+        or Nodes:FindFirstChild("LargeFoodNode") 
+        or Nodes:FindFirstChild("Foods") 
+        or Nodes:FindFirstChildWhichIsA("Folder")
+end
+
+if not FoodFolder then
+    warn("⚠️ ไม่พบโฟลเดอร์ Food ในโลกนี้ → ข้ามการฟาร์ม")
+end
+
+
+local CollectableNames = { "EdamameFoodModel", "KajiFruitFoodModel", "MistSudachiFoodModel" }
+
+local FARM_WORLD = 125804922932357
+local SELL_WORLD = 3475397644
+local RANDOM_WORLDS = {
+    3475419198, 3475422608, 3487210751,
+    3623549100, 3737848045, 3752680052, 4174118306, 4728805070
+}
+
+local PATROL_POSITIONS = {
+    Vector3.new(-266, 467, -394),
+    Vector3.new(1757, 783, 672),
+    Vector3.new(1420, 319, -1409),
+    Vector3.new(1922, 620, -2566),
+    Vector3.new(2226, 585, -4128),
+    Vector3.new(330, 901, -4304),
+    Vector3.new(-1433, 779, -4717),
+    Vector3.new(-3031, 780, -4211),
+    Vector3.new(-2643, 547, -2250),
+    Vector3.new(-857, 401, -2132),
+    Vector3.new(-828, 688, -3444),
+    Vector3.new(-1819, 405, 170),
+    Vector3.new(-1523, 962, 1150)
+}
+
+
+-- ⚡ FPS BOOST + BLACK SCREEN TOGGLE
+local Lighting = game:GetService("Lighting")
+local UIS = game:GetService("UserInputService")
+
+local blackScreenGui
+
+local function toggleBlackScreen()
+    if not CONFIG.BLACK_SCREEN then return end
+
+    if blackScreenGui and blackScreenGui.Enabled then
+        blackScreenGui.Enabled = false
+        print("🟢 ปิดจอดำแล้ว — กลับสู่โหมดปกติ")
+    else
+        if not blackScreenGui then
+            blackScreenGui = Instance.new("ScreenGui")
+            blackScreenGui.Name = "__BlackScreen"
+            blackScreenGui.IgnoreGuiInset = true
+            blackScreenGui.ResetOnSpawn = false
+            blackScreenGui.DisplayOrder = -1 -- อยู่หลัง GUI ฟาร์ม
+            blackScreenGui.Parent = game.CoreGui
+
+            local frame = Instance.new("Frame")
+        frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+
+            frame.Size = UDim2.new(1, 0, 1, 0)
+            frame.BackgroundTransparency = 0
+            frame.Parent = blackScreenGui
+        end
+        blackScreenGui.Enabled = true
+        print("🖤 เปิดโหมดจอดำ ประหยัดพลังงาน")
+    end
+    -- 💬 แสดงข้อความสถานะ
+local notify = Instance.new("TextLabel")
+notify.Size = UDim2.new(0, 300, 0, 40)
+notify.Position = UDim2.new(0.5, -150, 0.05, 0)
+notify.BackgroundTransparency = 0.3
+notify.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+notify.TextColor3 = blackScreenGui.Enabled and Color3.fromRGB(0, 255, 127) or Color3.fromRGB(255, 100, 100)
+notify.Text = blackScreenGui.Enabled and "🖤 Energy Saver ON" or "🟢 Energy Saver OFF"
+notify.Font = Enum.Font.GothamBold
+notify.TextScaled = true
+notify.Parent = game.CoreGui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 8)
+corner.Parent = notify
+
+task.spawn(function()
+    wait(2)
+    notify:Destroy()
+end)
+
+end
+
+local function enableFPSBoost()
+    if not CONFIG.FPS_BOOST_ENABLED then return end
+    print("⚙️ เปิดโหมด FPS Booster...")
+
+    -- 💤 ปิดเอฟเฟกต์ใน Lighting
+    for _, v in ipairs(Lighting:GetChildren()) do
+        if v:IsA("BloomEffect") or v:IsA("BlurEffect") or v:IsA("ColorCorrectionEffect") or v:IsA("DepthOfFieldEffect") or v:IsA("SunRaysEffect") then
+            v.Enabled = false
+        end
+    end
+    Lighting.GlobalShadows = false
+    Lighting.Brightness = 1
+    Lighting.FogEnd = 1e6
+
+    -- 🧹 ปิด Particle / Texture / Shadow
+    task.spawn(function()
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Fire") or obj:IsA("Smoke") then
+                obj.Enabled = false
+            elseif obj:IsA("Decal") or obj:IsA("Texture") then
+                obj.Transparency = 1
+            elseif obj:IsA("BasePart") then
+                obj.CastShadow = false
+            end
+        end
+    end)
+
+    -- 🎯 ตั้งค่า FPS Cap
+    if setfpscap then
+        setfpscap(CONFIG.TARGET_FPS)
+        print("🎯 FPS จำกัดที่:", CONFIG.TARGET_FPS)
+    end
+
+    -- 🖤 เปิดจอดำอัตโนมัติเมื่อเปิดบูสต์
+    toggleBlackScreen()
+
+    -- 🎹 ตั้งปุ่ม Toggle
+    UIS.InputBegan:Connect(function(input, gpe)
+        if not gpe and input.KeyCode == CONFIG.BLACK_SCREEN_KEY then
+            toggleBlackScreen()
+        end
+    end)
+        -- 🔄 ล็อก 60 ก่อน แล้วค่อยปลด 240 หลัง 2 วินาที
+    if setfpscap then
+        setfpscap(60)
+        print("🕒 กำลังตั้ง FPS ชั่วคราวที่ 60 ...")
+        task.delay(4, function()
+            setfpscap(240)
+            print("🚀 ปลดล็อก FPS เป็น 240 แล้ว!")
+        end)
+    end
+
+end
+
+
+--// 🛡️ REMOVE MOB DAMAGE
+local function removeMobDamageRemote()
+    local RS = game:GetService("ReplicatedStorage")
+    local RemotesFolder = RS:WaitForChild("Remotes")
+
+    local function killAllOnce()
+        local removed = 0
+        for _, obj in ipairs(RemotesFolder:GetDescendants()) do
+            if obj.Name == "MobDamageRemote" then
+                pcall(function() obj:Destroy() end)
+                removed += 1
+            end
+        end
+        return removed
+    end
+
+    task.spawn(function()
+        for i = 1, 15 do
+            local count = killAllOnce()
+            if count > 0 then
+                print(("🗑️ ลบ MobDamageRemote x%d"):format(count))
+            end
+            task.wait(1)
+        end
+
+        RemotesFolder.DescendantAdded:Connect(function(obj)
+            if obj.Name == "MobDamageRemote" then
+                task.defer(function()
+                    pcall(function() obj:Destroy() end)
+                end)
+            end
+        end)
+    end)
+end
+
+--// 🐉 DRAGON FUNCTIONS
+local function getAnyDragonRemote()
+    local dragonsFolder = character:WaitForChild("Dragons")
+    for _, dragon in pairs(dragonsFolder:GetChildren()) do
+        local remotes = dragon:FindFirstChild("Remotes")
+        if remotes and remotes:FindFirstChild("PlaySoundRemote") then
+            return remotes.PlaySoundRemote
+        end
+    end
+    return nil
+end
+
+local function spamAttack(targetPart)
+    local remote = getAnyDragonRemote()
+    if not remote then return false end
+    
+    local health = targetPart:FindFirstChild("Health")
+    if not health then return false end
+
+    while health and health.Value > 0 and targetPart.Parent do
+        local args = {"Breath", "Destructibles", targetPart}
+        remote:FireServer(unpack(args))
+        task.wait(CONFIG.ATTACK_DELAY)
+    end
+    return true
+end
+
+--// 🍎 FOOD NODE FUNCTIONS
+local function getAllAliveNodes()
+    local aliveNodes = {}
+    for _, subFolder in pairs(FoodFolder:GetChildren()) do
+        for _, node in pairs(subFolder:GetDescendants()) do
+            if (node.Name:lower():find("billboard") or node.Name:lower():find("trunk") or node:IsA("BasePart"))
+            and node:FindFirstChild("Health")
+            and node.Health.Value > 0 then
+                table.insert(aliveNodes, node)
+            end
+        end
+    end
+    return aliveNodes
+end
+
+local function getClosestAliveNode()
+    local nodeList = getAllAliveNodes()
+    local closestNode, closestDist = nil, math.huge
+    for _, node in pairs(nodeList) do
+        local dist = (hrp.Position - node.Position).Magnitude
+        if dist < closestDist then
+            closestNode = node
+            closestDist = dist
+        end
+    end
+    return closestNode
+end
+
+local function collectNearbyFoods()
+    for _, obj in pairs(workspace.Camera:GetChildren()) do
+        for _, name in ipairs(CollectableNames) do
+            if obj.Name == name then
+                for _, part in pairs(obj:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CFrame = hrp.CFrame
+                    end
+                end
+            end
+        end
+    end
+end
+
+--// 🧹 ฟังก์ชันลบ GUI และเอฟเฟกต์ภาพทั้งหมด
+local function clearVisualEffects()
+    local successCount = 0
+
+    -- 🧾 ลบ GUI เส้นทาง
+    local guiPath = game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui")
+    if guiPath and guiPath:FindFirstChild("WorkspaceGui") then
+        pcall(function()
+            guiPath.WorkspaceGui:Destroy()
+            successCount += 1
+            print("🗑️ ลบ  สำเร็จ")
+        end)
+    else
+        warn("⚠️ ไม่พบ ")
+    end
+
+    -- ☀️ ลบเอฟเฟกต์ใน Lighting
+    local Lighting = game:GetService("Lighting")
+    local targets = {
+        "Atmosphere",
+        "Sky",
+        "Bloom",
+        "Blur",
+        "ColorCorrection",
+        "DepthOfField",
+        "InterfaceBlur",
+        "SunRays",
+        "TeleportBlur",
+        "TweenCorrection",
+        "TweenDepthOfField",
+        "bloomReducer"
+    }
+
+    for _, name in ipairs(targets) do
+        local obj = Lighting:FindFirstChild(name)
+        if obj then
+            pcall(function()
+                obj:Destroy()
+                successCount += 1
+                print("ลบ  สำเร็จ", name)
+            end)
+        end
+    end
+
+    -- ✨ สรุปผล
+    print(("ลบ  สำเร็จ"):format(successCount))
+end
+
+-- เรียกใช้งานอัตโนมัติทันทีเมื่อโหลด
+clearVisualEffects()
+
+
+
+
+local function startAutoFarm()
+    task.spawn(function()
+        local retryCount = 0
+        while true do
+            local node = getClosestAliveNode()
+
+            if node and node:FindFirstChild("Health") and node.Health.Value > 0 then
+                -- ✅ รีเซ็ตตัวนับเมื่อเจอต้นไม้
+                retryCount = 0
+
+                -- ✅ วาร์ปไปต้นไม้
+                print("🌳 พบต้นไม้ใกล้สุด:", node.Name)
+                hrp.CFrame = node.CFrame + Vector3.new(0, 4, 0)
+                spamAttack(node)
+
+            else
+                -- ❌ ไม่เจอต้นไม้ — ตรวจซ้ำอัตโนมัติ
+                retryCount += 1
+                warn(("⚠️ ไม่พบต้นไม้รอบที่ %d → ตรวจสอบใหม่..."):format(retryCount))
+                task.wait(1)
+
+                -- 🔁 ลองค้นหาใหม่
+                local newNode = getClosestAliveNode()
+                if newNode then
+                    print("✅ เจอต้นไม้ใหม่แล้ว:", newNode.Name)
+                    hrp.CFrame = newNode.CFrame + Vector3.new(0, 4, 0)
+                    spamAttack(newNode)
+                else
+                    -- 🚶 ถ้ายังไม่เจอเลย ลองเดิน patrol
+                    warn("🚶 กำลังเดินตรวจหาตำแหน่งต้นไม้...")
+                    for _, pos in ipairs(PATROL_POSITIONS) do
+                        hrp.CFrame = CFrame.new(pos)
+                        task.wait(CONFIG.MOVEMENT_SPEED)
+
+                        local foundNode = getClosestAliveNode()
+                        if foundNode then
+                            print("🌲 เจอต้นไม้ใหม่ตอน patrol:", foundNode.Name)
+                            hrp.CFrame = foundNode.CFrame + Vector3.new(0, 4, 0)
+                            spamAttack(foundNode)
+                            break
+                        end
+                    end
+                end
+            end
+
+            -- 🕐 ตรวจทุก 1 วิ
+            task.wait(1)
+        end
+    end)
+end
+
+
+local function startAutoCollect()
+    task.spawn(function()
+        while task.wait(1) do
+            collectNearbyFoods()
+        end
+    end)
+end
+
+--// 💰 SELL FUNCTIONS
+local function sellAllItems()
+    local resources = player:WaitForChild("Data"):WaitForChild("Resources")
+    for _, item in ipairs({"Edamame", "KajiFruit", "MistSudachi"}) do
+        local val = resources:FindFirstChild(item)
+        if val and val.Value > 0 then
+            local args = {{ ItemName = item, Amount = val.Value }}
+            ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("SellItemRemote"):FireServer(unpack(args))
+            print("💰 ขาย:", item, "จำนวน", val.Value)
+        end
+    end
+end
+
+local function startCheckInventory()
+    task.spawn(function()
+        while task.wait(1) do
+            local resources = player:WaitForChild("Data"):WaitForChild("Resources")
+            local eda  = resources:FindFirstChild("Edamame") and resources.Edamame.Value or 0
+            local kaji = resources:FindFirstChild("KajiFruit") and resources.KajiFruit.Value or 0
+            local mist = resources:FindFirstChild("MistSudachi") and resources.MistSudachi.Value or 0
+
+            if eda >= CONFIG.SELL_THRESHOLD 
+                or kaji >= CONFIG.SELL_THRESHOLD 
+                or mist >= CONFIG.SELL_THRESHOLD then
+                print("📦 มีของถึง " .. CONFIG.SELL_THRESHOLD .. " → วาร์ปไปขาย...")
+                task.wait(5)
+                ReplicatedStorage.Remotes.WorldTeleportRemote:InvokeServer(SELL_WORLD, {})
+                break
+            end
+        end
+    end)
+end
+
+--// 👁️ PLAYER MONITOR (ตรวจทุก 1 วิ แบบแม่นยำ)
+local function monitorPlayers()
+    task.spawn(function()
+        while true do
+            task.wait(1) -- ✅ ตรวจทุก 1 วิ
+
+            local currentPlace = game.PlaceId
+            local playerCount = #Players:GetPlayers()
+
+            -- 🧍‍♂️ ถ้ามีผู้เล่นอื่น
+            if playerCount > 1 then
+                warn("⚠️ พบผู้เล่นอื่นในเซิร์ฟเวอร์ → เตรียมสุ่มวาร์ปใน 3 วิ...")
+                task.wait(3)
+
+                local randomWorld = RANDOM_WORLDS[math.random(1, #RANDOM_WORLDS)]
+                pcall(function()
+                    ReplicatedStorage.Remotes.WorldTeleportRemote:InvokeServer(randomWorld, {})
+                end)
+
+                print("🌍 วาร์ปไปโลกสุ่ม:", randomWorld)
+                task.wait(10) -- ⏳ รอโหลดโลกก่อนตรวจใหม่
+            end
+
+            -- 🌏 ตรวจว่าอยู่โลกไหน
+            if currentPlace ~= FARM_WORLD and currentPlace ~= SELL_WORLD then
+                warn("🚫 ตรวจพบอยู่นอกโลกฟาร์มหรือขาย (PlaceId:", currentPlace, ") → วาร์ปกลับโลกฟาร์ม")
+                pcall(function()
+                    ReplicatedStorage.Remotes.WorldTeleportRemote:InvokeServer(FARM_WORLD, {})
+                end)
+
+                task.wait(4) -- ⏳ รอให้วาร์ปเสร็จก่อนเริ่มตรวจใหม่
+            else
+                -- ✅ อยู่ในโลกถูกต้อง ตรวจซ้ำทุก 1 วิ
+                print("🟢 อยู่ในโลกถูกต้อง:", currentPlace)
+            end
+        end
+    end)
+end
+
+
+
+--// 🎨 GUI SYSTEM
+local function createGUI()
+    if game.CoreGui:FindFirstChild("FarmGUI") then
+        game.CoreGui.FarmGUI:Destroy()
+    end
+
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "FarmGUI"
+    screenGui.ResetOnSpawn = false
+    screenGui.IgnoreGuiInset = true
+    screenGui.Parent = game.CoreGui
+
+    -- 💰 Coin Display
+    if CONFIG.SHOW_COIN_GUI then
+        local coinLabel = Instance.new("TextLabel")
+        coinLabel.Name = "CoinLabel"
+        coinLabel.Size = UDim2.new(0, 250, 0, 60)
+        coinLabel.Position = UDim2.new(0.5, -125, 0.05, 0)
+        coinLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+        coinLabel.BackgroundTransparency = 0.3
+        coinLabel.BorderSizePixel = 0
+        coinLabel.TextColor3 = Color3.fromRGB(255, 223, 0)
+        coinLabel.TextStrokeTransparency = 0.5
+        coinLabel.TextScaled = true
+        coinLabel.Font = Enum.Font.GothamBold
+        coinLabel.Text = "💰 Loading..."
+        coinLabel.Parent = screenGui
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 12)
+        corner.Parent = coinLabel
+
+        task.spawn(function()
+            local coinsValue = player:WaitForChild("Data"):WaitForChild("Currency"):WaitForChild("Coins")
+            local lastCoins = coinsValue.Value
+            
+            while task.wait(CONFIG.GUI_UPDATE_RATE) do
+                local current = coinsValue.Value
+                local diff = current - lastCoins
+
+                if diff > 0 then
+                    coinLabel.TextColor3 = Color3.fromRGB(0, 255, 127)
+                elseif diff < 0 then
+                    coinLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+                else
+                    coinLabel.TextColor3 = Color3.fromRGB(255, 223, 0)
+                end
+
+                coinLabel.Text = string.format("💰 %s", tostring(current))
+                lastCoins = current
+            end
+        end)
+    end
+
+    -- 🍎 Fruit Display
+    if CONFIG.SHOW_FRUIT_GUI then
+        local fruitFrame = Instance.new("Frame")
+        fruitFrame.Name = "FruitFrame"
+        fruitFrame.Size = UDim2.new(0, 280, 0, 150)
+        fruitFrame.Position = UDim2.new(0.5, -140, 0.15, 0)
+        fruitFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+        fruitFrame.BackgroundTransparency = 0.3
+        fruitFrame.BorderSizePixel = 0
+        fruitFrame.Parent = screenGui
+
+        local frameCorner = Instance.new("UICorner")
+        frameCorner.CornerRadius = UDim.new(0, 12)
+        frameCorner.Parent = fruitFrame
+
+        local fruits = {
+            {name = "Edamame", icon = "🫘", color = Color3.fromRGB(144, 238, 144)},
+            {name = "KajiFruit", icon = "🍊", color = Color3.fromRGB(255, 165, 0)},
+            {name = "MistSudachi", icon = "🍋", color = Color3.fromRGB(255, 255, 102)}
+        }
+
+        for i, fruit in ipairs(fruits) do
+            local label = Instance.new("TextLabel")
+            label.Name = fruit.name .. "Label"
+            label.Size = UDim2.new(1, -20, 0, 40)
+            label.Position = UDim2.new(0, 10, 0, (i-1) * 45 + 10)
+            label.BackgroundTransparency = 1
+            label.TextColor3 = fruit.color
+            label.TextStrokeTransparency = 0.5
+            label.TextScaled = true
+            label.Font = Enum.Font.GothamBold
+            label.TextXAlignment = Enum.TextXAlignment.Left
+            label.Text = fruit.icon .. " Loading..."
+            label.Parent = fruitFrame
+        end
+
+        task.spawn(function()
+            local resources = player:WaitForChild("Data"):WaitForChild("Resources")
+            while task.wait(CONFIG.GUI_UPDATE_RATE) do
+                for i, fruit in ipairs(fruits) do
+                    local val = resources:FindFirstChild(fruit.name)
+                    if val then
+                        local label = fruitFrame:FindFirstChild(fruit.name .. "Label")
+                        if label then
+                            label.Text = string.format("%s %s: %d", fruit.icon, fruit.name, val.Value)
+                        end
+                    end
+                end
+            end
+        end)
+    end
+end
+
+--// 🔄 ANTI-AFK
+local function startAntiAFK()
+    task.spawn(function()
+        local VIM = game:GetService("VirtualInputManager")
+        while true do
+            task.wait(180)
+            VIM:SendKeyEvent(true, Enum.KeyCode.A, false, game)
+            task.wait(0.1)
+            VIM:SendKeyEvent(false, Enum.KeyCode.A, false, game)
+        end
+    end)
+end
+
+
+
+createGUI()
+startAntiAFK()
+enableFPSBoost() -- ✅ เพิ่มบรรทัดนี้
+
+
+local placeId = game.PlaceId
+
+if placeId == FARM_WORLD then
+    print("🚜 อยู่ในโลกฟาร์ม → ทำงานตามปกติ")
+    startAutoFarm()
+    startAutoCollect()
+    startCheckInventory()
+    monitorPlayers()
+    task.wait(5)
+    removeMobDamageRemote()
+
+elseif placeId == SELL_WORLD then
+    print("💰 อยู่ในโลกขาย → ขายของแล้วกลับไปฟาร์ม")
+    task.wait(2)
+    sellAllItems()
+    task.wait(3)
+    ReplicatedStorage.Remotes.WorldTeleportRemote:InvokeServer(FARM_WORLD, {})
+
+else
+    print("🌍 อยู่นอกโลกฟาร์ม/ขาย → วาร์ปกลับฟาร์มเท่านั้น")
+    pcall(function()
+        ReplicatedStorage.Remotes.WorldTeleportRemote:InvokeServer(FARM_WORLD, {})
+    end)
+    
+    -- หยุดโค้ดที่เหลือไม่ให้รันต่อ
+    return
+end
+
